@@ -82,10 +82,6 @@ Edit `Battlesnake::info()` in `Battlesnake.php` for `author`, `color`, `head`, a
 
 Improve survival in `Battlesnake::move()` — the starter avoids moving backward and picks a random safe direction. See the TODO comments for bounds, collisions, and food.
 
-## Deploy
-
-Host this project on any PHP-capable platform (Railway, Render, Fly.io, etc.). Point the web root at `index.php` or run the built-in server command above with `PORT` set by your host.
-
 ## Project layout
 
 - `index.php` — HTTP routing for Battlesnake webhooks
