@@ -1,55 +1,45 @@
 <?php
 
-include_once 'api.php';
+declare(strict_types=1);
 
-/**
- * Basic index.php router that checks the incoming REQUEST_URI and decides what response to send.
- *
- * Simple API response functions used here are located in api.php.
- *
- * Most of your snake implementation will need to happen in the "/move" command.
- */
+require_once __DIR__ . '/Battlesnake.php';
 
-// Get the requested URI without any query parameters on the end
-$requestUri = strtok($_SERVER['REQUEST_URI'], '?');
-if ($requestUri == '/')  
-{   //Index Section
-    $apiversion = "1";
-    $author     = "dlottich";           // TODO: Your Battlesnake Username
-    $color      = "#000080";    // TODO: Personalize
-    $head       = "evil";    // TODO: Personalize
-    $tail       = "mlh-gene";    // TODO: Personalize
+header('Server: battlesnake/github/starter-snake-php');
 
-    indexResponse($apiversion,$author,$color,$head, $tail);
+$method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
+$path = parse_url($_SERVER['REQUEST_URI'] ?? '/', PHP_URL_PATH) ?: '/';
+
+if ($method === 'GET' && $path === '/') {
+    header('Content-Type: application/json');
+    echo json_encode(Battlesnake::info(), JSON_THROW_ON_ERROR);
+    return;
 }
-elseif ($requestUri == '/start')
-{
-    // read the incoming request body stream and decode the JSON
-    $data = json_decode(file_get_contents('php://input'));
 
-    // TODO - if you have a stateful snake, you could do initialization work here
-    startResponse();
-}
-elseif ($requestUri == '/move')
-{   //Move Section
-    // read the incoming request body stream and decode the JSON
-    $data = json_decode(file_get_contents('php://input'));
+$body = file_get_contents('php://input');
+$gameState = $body !== false && $body !== '' ? json_decode($body, true, 512, JSON_THROW_ON_ERROR) : [];
 
-    error_log('Received move data: '.print_r($data, true));
+if ($method === 'POST' && $path === '/start') {
+    Battlesnake::start($gameState);
+    http_response_code(200);
+    header('Content-Type: text/plain; charset=utf-8');
+    echo 'ok';
+    return;
+}
 
-    // TODO - Implement your Battlesnake here!
-    $possibleMove = ['up', 'down', 'left', 'right'];
-    moveResponse($possibleMove[array_rand($possibleMove)]);
+if ($method === 'POST' && $path === '/move') {
+    header('Content-Type: application/json');
+    echo json_encode(Battlesnake::move($gameState), JSON_THROW_ON_ERROR);
+    return;
 }
-elseif ($requestUri == '/end')
-{
-     // read the incoming request body stream and decode the JSON
-     $data = json_decode(file_get_contents('php://input'));
 
-     // TODO - if you have a stateful snake, you could do finalize work here
-    endResponse();
+if ($method === 'POST' && $path === '/end') {
+    Battlesnake::end($gameState);
+    http_response_code(200);
+    header('Content-Type: text/plain; charset=utf-8');
+    echo 'ok';
+    return;
 }
-else
-{
-    header($_SERVER['SERVER_PROTOCOL'].' 404 Not Found');
-}
+
+http_response_code(404);
+header('Content-Type: application/json');
+echo json_encode(['error' => 'Not found'], JSON_THROW_ON_ERROR);
