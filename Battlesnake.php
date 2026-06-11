@@ -90,6 +90,11 @@ final class Battlesnake
         array $occupiedKeys,
         int $health,
     ): array {
+        //if the snake is low on health, don't worry about being space aware.
+        if ($health < 12) {
+            return $candidateMoves;
+        }
+
         $allNeighborsSafe = [];
         $neighborCounts = [];
 
@@ -129,7 +134,7 @@ final class Battlesnake
             $neighborCounts[$move] = $safeNeighborCount;
         }
 
-        if ($allNeighborsSafe !== [] && $health > 10) {
+        if ($allNeighborsSafe !== []) {
             return $allNeighborsSafe;
         }
 
