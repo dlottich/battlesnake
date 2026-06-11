@@ -185,12 +185,73 @@ final class Battlesnake
         return $bestMoves;
     }
 
+    /** @param list<array{x: int, y: int}> $opponentHeads */
+    private static function isCloserToAnyOpponentHeadThan(
+        int $x,
+        int $y,
+        array $myHead,
+        array $opponentHeads,
+    ): bool {
+        foreach ($opponentHeads as $head) {
+            $distanceFromCell = abs($x - $head['x']) + abs($y - $head['y']);
+            $distanceFromMe = abs($myHead['x'] - $head['x']) + abs($myHead['y'] - $head['y']);
+
+            if ($distanceFromCell < $distanceFromMe) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * @param list<array{x: int, y: int}> $opponentHeads
+     * @return ?array{x: int, y: int}
+     */
+    private static function findFarthestPointFromOpponentHeads(
+        int $boardWidth,
+        int $boardHeight,
+        array $opponentHeads,
+        bool $avoidMovingTowardHeads,
+        ?array $myHead = null,
+    ): ?array {
+        $bestPoint = null;
+        $bestMinDistance = -1;
+
+        for ($y = 0; $y < $boardHeight; $y++) {
+            for ($x = 0; $x < $boardWidth; $x++) {
+                if (
+                    $avoidMovingTowardHeads
+                    && $myHead !== null
+                    && self::isCloserToAnyOpponentHeadThan($x, $y, $myHead, $opponentHeads)
+                ) {
+                    continue;
+                }
+
+                $minDistance = PHP_INT_MAX;
+
+                foreach ($opponentHeads as $head) {
+                    $distance = abs($x - $head['x']) + abs($y - $head['y']);
+                    $minDistance = min($minDistance, $distance);
+                }
+
+                if ($minDistance > $bestMinDistance) {
+                    $bestMinDistance = $minDistance;
+                    $bestPoint = ['x' => $x, 'y' => $y];
+                }
+            }
+        }
+
+        return $bestPoint;
+    }
+
     /** @return array{x: int, y: int} */
     private static function getFarthestPointFromOpponentHeads(
         int $boardWidth,
         int $boardHeight,
         array $snakes,
         ?string $myId,
+        array $myHead,
     ): array {
         $opponentHeads = [];
 
@@ -209,26 +270,27 @@ final class Battlesnake
             ];
         }
 
-        $bestPoint = ['x' => 0, 'y' => 0];
-        $bestMinDistance = -1;
+        $bestPoint = self::findFarthestPointFromOpponentHeads(
+            $boardWidth,
+            $boardHeight,
+            $opponentHeads,
+            true,
+            $myHead,
+        );
 
-        for ($y = 0; $y < $boardHeight; $y++) {
-            for ($x = 0; $x < $boardWidth; $x++) {
-                $minDistance = PHP_INT_MAX;
-
-                foreach ($opponentHeads as $head) {
-                    $distance = abs($x - $head['x']) + abs($y - $head['y']);
-                    $minDistance = min($minDistance, $distance);
-                }
-
-                if ($minDistance > $bestMinDistance) {
-                    $bestMinDistance = $minDistance;
-                    $bestPoint = ['x' => $x, 'y' => $y];
-                }
-            }
+        if ($bestPoint === null) {
+            $bestPoint = self::findFarthestPointFromOpponentHeads(
+                $boardWidth,
+                $boardHeight,
+                $opponentHeads,
+                false,
+            );
         }
 
-        return $bestPoint;
+        return $bestPoint ?? [
+            'x' => intdiv($boardWidth - 1, 2),
+            'y' => intdiv($boardHeight - 1, 2),
+        ];
     }
 
     /**
@@ -361,6 +423,7 @@ final class Battlesnake
                 $boardHeight,
                 $gameState['board']['snakes'],
                 $myId,
+                $myHead,
             );
             $candidateMoves = self::movesTowardPoint(
                 $spaceAwareMoves,
