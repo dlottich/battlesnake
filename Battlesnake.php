@@ -355,7 +355,7 @@ final class Battlesnake
             $health,
         );
 
-        if ($food === [] || $health > 50) {
+        if ($food === [] || $health > 30) {
             $retreatPoint = self::getFarthestPointFromOpponentHeads(
                 $boardWidth,
                 $boardHeight,
