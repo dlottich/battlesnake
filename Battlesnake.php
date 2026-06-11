@@ -179,6 +179,52 @@ final class Battlesnake
         return $bestMoves;
     }
 
+    /** @return array{x: int, y: int} */
+    private static function getFarthestPointFromOpponentHeads(
+        int $boardWidth,
+        int $boardHeight,
+        array $snakes,
+        ?string $myId,
+    ): array {
+        $opponentHeads = [];
+
+        foreach ($snakes as $snake) {
+            if ($myId !== null && $snake['id'] === $myId) {
+                continue;
+            }
+
+            $opponentHeads[] = $snake['body'][0];
+        }
+
+        if ($opponentHeads === []) {
+            return [
+                'x' => intdiv($boardWidth - 1, 2),
+                'y' => intdiv($boardHeight - 1, 2),
+            ];
+        }
+
+        $bestPoint = ['x' => 0, 'y' => 0];
+        $bestMinDistance = -1;
+
+        for ($y = 0; $y < $boardHeight; $y++) {
+            for ($x = 0; $x < $boardWidth; $x++) {
+                $minDistance = PHP_INT_MAX;
+
+                foreach ($opponentHeads as $head) {
+                    $distance = abs($x - $head['x']) + abs($y - $head['y']);
+                    $minDistance = min($minDistance, $distance);
+                }
+
+                if ($minDistance > $bestMinDistance) {
+                    $bestMinDistance = $minDistance;
+                    $bestPoint = ['x' => $x, 'y' => $y];
+                }
+            }
+        }
+
+        return $bestPoint;
+    }
+
     /**
      * Called every turn (POST /move).
      * Valid moves: up, down, left, right.
@@ -303,14 +349,18 @@ final class Battlesnake
         );
 
         if ($food === [] || $health > 50) {
-            $centerX = intdiv($boardWidth - 1, 2);
-            $centerY = intdiv($boardHeight - 1, 2);
+            $retreatPoint = self::getFarthestPointFromOpponentHeads(
+                $boardWidth,
+                $boardHeight,
+                $gameState['board']['snakes'],
+                $myId,
+            );
             $candidateMoves = self::movesTowardPoint(
                 $spaceAwareMoves,
                 $myHead,
                 $moveOffsets,
-                $centerX,
-                $centerY,
+                $retreatPoint['x'],
+                $retreatPoint['y'],
             );
         } else {
             $closestFood = $food[0];
