@@ -88,6 +88,7 @@ final class Battlesnake
         int $boardWidth,
         int $boardHeight,
         array $occupiedKeys,
+        int $health,
     ): array {
         $allNeighborsSafe = [];
         $neighborCounts = [];
@@ -128,7 +129,7 @@ final class Battlesnake
             $neighborCounts[$move] = $safeNeighborCount;
         }
 
-        if ($allNeighborsSafe !== []) {
+        if ($allNeighborsSafe !== [] && $health > 10) {
             return $allNeighborsSafe;
         }
 
@@ -346,6 +347,7 @@ final class Battlesnake
             $boardWidth,
             $boardHeight,
             $occupiedKeys,
+            $health,
         );
 
         if ($food === [] || $health > 50) {
