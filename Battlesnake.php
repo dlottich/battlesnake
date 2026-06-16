@@ -185,6 +185,23 @@ final class Battlesnake
         return $bestMoves;
     }
 
+    /**
+     * @param list<array{x: int, y: int}> $food
+     * @return list<array{x: int, y: int}>
+     */
+    private static function filterEdgeFood(array $food, int $boardWidth, int $boardHeight): array
+    {
+        $interiorFood = array_values(array_filter(
+            $food,
+            static fn(array $item): bool => $item['x'] > 0
+                && $item['x'] < $boardWidth - 1
+                && $item['y'] > 0
+                && $item['y'] < $boardHeight - 1,
+        ));
+
+        return $interiorFood !== [] ? $interiorFood : $food;
+    }
+
     /** @param list<array{x: int, y: int}> $opponentHeads */
     private static function isCloserToAnyOpponentHeadThan(
         int $x,
@@ -293,22 +310,23 @@ final class Battlesnake
         ];
     }
 
-    private static function hasMoreThanTwoHealthAdvantageOverAnyOpponent(
+    private static function hasMoreThanTwoHealthAdvantageOverAllOpponents(
         int $myHealth,
         array $snakes,
         ?string $myId,
     ): bool {
+        $hasMoreThanTwoHealthAdvantage = true;
         foreach ($snakes as $snake) {
             if ($myId !== null && $snake['id'] === $myId) {
                 continue;
             }
 
-            if ($myHealth - ($snake['health'] ?? 100) >= 2) {
-                return true;
+            if ($myHealth - ($snake['health'] ?? 100) < 2) {
+                $hasMoreThanTwoHealthAdvantage = false;
             }
         }
 
-        return false;
+        return $hasMoreThanTwoHealthAdvantage;
     }
 
     /**
@@ -422,7 +440,7 @@ final class Battlesnake
         }
 
         $occupiedKeys = self::buildOccupiedKeys($myBody, $gameState['board']['snakes'], $myId);
-        $food = $gameState['board']['food'];
+        $food = self::filterEdgeFood($gameState['board']['food'], $boardWidth, $boardHeight);
         $health = $gameState['you']['health'] ?? 100;
 
         $spaceAwareMoves = self::getNextMoveBasedonOneSpaceAway(
@@ -436,7 +454,7 @@ final class Battlesnake
         );
 
         $shouldTargetFood = $food !== []
-            && !self::hasMoreThanTwoHealthAdvantageOverAnyOpponent(
+            && !self::hasMoreThanTwoHealthAdvantageOverAllOpponents(
                 $health,
                 $gameState['board']['snakes'],
                 $myId,
