@@ -246,40 +246,13 @@ final class Battlesnake
     }
 
     /** @return array{x: int, y: int} */
-    private static function getClosestPointToOpponentHeads(
+    private static function getFarthestPointFromOpponentHeads(
         int $boardWidth,
         int $boardHeight,
         array $snakes,
         ?string $myId,
         array $myHead,
-        int $myHealth,
     ): array {
-        $closestBeatableHead = null;
-        $closestDistance = PHP_INT_MAX;
-
-        foreach ($snakes as $snake) {
-            if ($myId !== null && $snake['id'] === $myId) {
-                continue;
-            }
-
-            $opponentHealth = $snake['health'] ?? 100;
-            if ($myHealth - $opponentHealth < 2) {
-                continue;
-            }
-
-            $head = $snake['body'][0];
-            $distance = abs($myHead['x'] - $head['x']) + abs($myHead['y'] - $head['y']);
-
-            if ($distance < $closestDistance) {
-                $closestDistance = $distance;
-                $closestBeatableHead = $head;
-            }
-        }
-
-        if ($closestBeatableHead !== null) {
-            return $closestBeatableHead;
-        }
-
         $opponentHeads = [];
 
         foreach ($snakes as $snake) {
@@ -470,13 +443,12 @@ final class Battlesnake
             );
 
         if (!$shouldTargetFood) {
-            $targetPoint = self::getClosestPointToOpponentHeads(
+            $targetPoint = self::getFarthestPointFromOpponentHeads(
                 $boardWidth,
                 $boardHeight,
                 $gameState['board']['snakes'],
                 $myId,
                 $myHead,
-                $health,
             );
             $candidateMoves = self::movesTowardPoint(
                 $spaceAwareMoves,
