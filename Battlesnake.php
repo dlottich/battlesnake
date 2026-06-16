@@ -8,6 +8,16 @@ declare(strict_types=1);
  */
 final class Battlesnake
 {
+    private const MOVE_OFFSETS = [
+        'up' => ['x' => 0, 'y' => 1],
+        'down' => ['x' => 0, 'y' => -1],
+        'left' => ['x' => -1, 'y' => 0],
+        'right' => ['x' => 1, 'y' => 0],
+    ];
+
+    private const LOW_HEALTH_THRESHOLD = 12;
+    private const HEALTH_ADVANTAGE_THRESHOLD = 2;
+
     /** Called when you register your Battlesnake (GET /). */
     public static function info(): array
     {
@@ -34,64 +44,183 @@ final class Battlesnake
         error_log("GAME OVER\n");
     }
 
-    private static function cellKey(int $x, int $y): string
+    /**
+     * Called every turn (POST /move).
+     * Valid moves: up, down, left, or right.
+     */
+    public static function move(array $gameState): array
     {
-        return "{$x},{$y}";
+        $boardWidth = $gameState['board']['width'];
+        $boardHeight = $gameState['board']['height'];
+        $myId = $gameState['you']['id'] ?? null;
+        $myHead = $gameState['you']['body'][0];
+        $health = $gameState['you']['health'] ?? 100;
+        $myBody = self::bodyForCollisionCheck($gameState['you']['body'], $health);
+        $snakes = $gameState['board']['snakes'];
+        $food = self::filterEdgeFood($gameState['board']['food'], $boardWidth, $boardHeight);
+
+        $safeMoves = self::findSafeMoves(
+            $myHead,
+            $myBody,
+            $snakes,
+            $myId,
+            $boardWidth,
+            $boardHeight,
+        );
+
+        if ($safeMoves === []) {
+            $turn = $gameState['turn'] ?? '?';
+            error_log("MOVE {$turn}: No safe moves detected! Moving down");
+
+            return ['move' => 'down'];
+        }
+
+        $occupiedKeys = self::buildOccupiedKeys($myBody, $snakes, $myId);
+        $spaceAwareMoves = self::filterSpaceAwareMoves(
+            $safeMoves,
+            $myHead,
+            $boardWidth,
+            $boardHeight,
+            $occupiedKeys,
+            $health,
+        );
+
+        $target = self::shouldTargetFood($food, $health, $snakes, $myId)
+            ? self::findClosestPoint($myHead, $food)
+            : self::getRetreatPoint($boardWidth, $boardHeight, $snakes, $myId, $myHead);
+
+        $candidateMoves = self::movesMinimizingDistanceTo(
+            $spaceAwareMoves,
+            $myHead,
+            $target['x'],
+            $target['y'],
+        );
+        $nextMove = $candidateMoves[array_rand($candidateMoves)];
+
+        $turn = $gameState['turn'] ?? '?';
+        error_log("MOVE {$turn}: {$nextMove}");
+
+        return ['move' => $nextMove];
     }
 
-    private static function isCellSafe(
-        int $x,
-        int $y,
+    /** @param list<array{x: int, y: int}> $body */
+    private static function bodyForCollisionCheck(array $body, int $health): array
+    {
+        if ($health < 100) {
+            return array_slice($body, 0, -1);
+        }
+
+        return $body;
+    }
+
+    /** @return list<string> */
+    private static function findSafeMoves(
+        array $myHead,
+        array $myBody,
+        array $snakes,
+        ?string $myId,
         int $boardWidth,
         int $boardHeight,
-        array $occupiedKeys,
-    ): bool {
-        if ($x < 0 || $y < 0 || $x >= $boardWidth || $y >= $boardHeight) {
-            return false;
+    ): array {
+        $isMoveSafe = array_fill_keys(array_keys(self::MOVE_OFFSETS), true);
+
+        self::blockReverseMove($isMoveSafe, $myHead, $myBody[1]);
+        self::blockOutOfBoundsMoves($isMoveSafe, $myHead, $boardWidth, $boardHeight);
+        self::blockMovesIntoSegments($isMoveSafe, $myHead, $myBody);
+
+        foreach (self::opponentSnakes($snakes, $myId) as $snake) {
+            self::blockMovesIntoSegments($isMoveSafe, $myHead, $snake['body']);
         }
 
-        return !isset($occupiedKeys[self::cellKey($x, $y)]);
+        return self::movesMarkedSafe($isMoveSafe);
     }
 
-    /** @return array<string, true> */
-    private static function buildOccupiedKeys(array $myBody, array $snakes, ?string $myId): array
+    /** @param array<string, bool> $isMoveSafe */
+    private static function blockReverseMove(array &$isMoveSafe, array $head, array $neck): void
     {
-        $keys = [];
-
-        foreach (array_slice($myBody, 1) as $segment) {
-            $keys[self::cellKey($segment['x'], $segment['y'])] = true;
+        if ($neck['x'] < $head['x']) {
+            $isMoveSafe['left'] = false;
+        } elseif ($neck['x'] > $head['x']) {
+            $isMoveSafe['right'] = false;
+        } elseif ($neck['y'] < $head['y']) {
+            $isMoveSafe['down'] = false;
+        } elseif ($neck['y'] > $head['y']) {
+            $isMoveSafe['up'] = false;
         }
+    }
 
-        foreach ($snakes as $snake) {
-            if ($myId !== null && $snake['id'] === $myId) {
-                continue;
-            }
-
-            foreach ($snake['body'] as $segment) {
-                $keys[self::cellKey($segment['x'], $segment['y'])] = true;
-            }
+    /** @param array<string, bool> $isMoveSafe */
+    private static function blockOutOfBoundsMoves(
+        array &$isMoveSafe,
+        array $head,
+        int $boardWidth,
+        int $boardHeight,
+    ): void {
+        if ($head['y'] >= $boardHeight - 1) {
+            $isMoveSafe['up'] = false;
         }
-
-        return $keys;
+        if ($head['y'] <= 0) {
+            $isMoveSafe['down'] = false;
+        }
+        if ($head['x'] <= 0) {
+            $isMoveSafe['left'] = false;
+        }
+        if ($head['x'] >= $boardWidth - 1) {
+            $isMoveSafe['right'] = false;
+        }
     }
 
     /**
-     * Filter to the best space-aware moves.
-     * Prefers moves where all adjacent cells from the landing spot are also safe.
+     * @param array<string, bool> $isMoveSafe
+     * @param list<array{x: int, y: int}> $segments
+     */
+    private static function blockMovesIntoSegments(array &$isMoveSafe, array $head, array $segments): void
+    {
+        foreach (self::MOVE_OFFSETS as $move => $offset) {
+            if (!$isMoveSafe[$move]) {
+                continue;
+            }
+
+            $nextHead = self::applyOffset($head, $offset);
+
+            foreach ($segments as $segment) {
+                if (self::isSameCell($nextHead, $segment)) {
+                    $isMoveSafe[$move] = false;
+                    break;
+                }
+            }
+        }
+    }
+
+    /** @param array<string, bool> $isMoveSafe @return list<string> */
+    private static function movesMarkedSafe(array $isMoveSafe): array
+    {
+        $safeMoves = [];
+
+        foreach ($isMoveSafe as $move => $safe) {
+            if ($safe) {
+                $safeMoves[] = $move;
+            }
+        }
+
+        return $safeMoves;
+    }
+
+    /**
+     * Prefer moves where all adjacent cells from the landing spot are also safe.
      *
+     * @param list<string> $candidateMoves
      * @return list<string>
      */
-    public static function getNextMoveBasedonOneSpaceAway(
+    private static function filterSpaceAwareMoves(
         array $candidateMoves,
         array $myHead,
-        array $moveOffsets,
         int $boardWidth,
         int $boardHeight,
         array $occupiedKeys,
         int $health,
     ): array {
-        //if the snake is low on health, don't worry about being space aware.
-        if ($health < 12) {
+        if ($health < self::LOW_HEALTH_THRESHOLD) {
             return $candidateMoves;
         }
 
@@ -99,28 +228,14 @@ final class Battlesnake
         $neighborCounts = [];
 
         foreach ($candidateMoves as $move) {
-            $offset = $moveOffsets[$move];
-            $nextHead = [
-                'x' => $myHead['x'] + $offset['x'],
-                'y' => $myHead['y'] + $offset['y'],
-            ];
-
+            $nextHead = self::applyOffset($myHead, self::MOVE_OFFSETS[$move]);
             $safeNeighborCount = 0;
             $everyNeighborSafe = true;
 
-            foreach ($moveOffsets as $neighborOffset) {
-                $neighbor = [
-                    'x' => $nextHead['x'] + $neighborOffset['x'],
-                    'y' => $nextHead['y'] + $neighborOffset['y'],
-                ];
+            foreach (self::MOVE_OFFSETS as $neighborOffset) {
+                $neighbor = self::applyOffset($nextHead, $neighborOffset);
 
-                if (self::isCellSafe(
-                    $neighbor['x'],
-                    $neighbor['y'],
-                    $boardWidth,
-                    $boardHeight,
-                    $occupiedKeys,
-                )) {
+                if (self::isCellSafe($neighbor['x'], $neighbor['y'], $boardWidth, $boardHeight, $occupiedKeys)) {
                     $safeNeighborCount++;
                 } else {
                     $everyNeighborSafe = false;
@@ -138,51 +253,106 @@ final class Battlesnake
             return $allNeighborsSafe;
         }
 
-        $bestCount = -1;
-        $bestMoves = [];
-
-        foreach ($candidateMoves as $move) {
-            $count = $neighborCounts[$move];
-
-            if ($count > $bestCount) {
-                $bestCount = $count;
-                $bestMoves = [$move];
-            } elseif ($count === $bestCount) {
-                $bestMoves[] = $move;
-            }
-        }
-
-        return $bestMoves;
+        return self::movesWithBestScore($candidateMoves, $neighborCounts);
     }
 
-    /** @return list<string> */
-    private static function movesTowardPoint(
+    /**
+     * @param list<string> $candidateMoves
+     * @return list<string>
+     */
+    private static function movesMinimizingDistanceTo(
         array $candidateMoves,
-        array $myHead,
-        array $moveOffsets,
+        array $from,
         int $targetX,
         int $targetY,
     ): array {
-        $bestMoves = [];
-        $bestDistance = PHP_INT_MAX;
+        $scores = [];
 
         foreach ($candidateMoves as $move) {
-            $offset = $moveOffsets[$move];
-            $nextHead = [
-                'x' => $myHead['x'] + $offset['x'],
-                'y' => $myHead['y'] + $offset['y'],
-            ];
-            $distance = abs($nextHead['x'] - $targetX) + abs($nextHead['y'] - $targetY);
+            $nextHead = self::applyOffset($from, self::MOVE_OFFSETS[$move]);
+            $scores[$move] = self::manhattanDistance($nextHead, ['x' => $targetX, 'y' => $targetY]);
+        }
 
-            if ($distance < $bestDistance) {
-                $bestDistance = $distance;
-                $bestMoves = [$move];
-            } elseif ($distance === $bestDistance) {
-                $bestMoves[] = $move;
+        return self::movesWithBestScore($candidateMoves, $scores, lowerIsBetter: true);
+    }
+
+    /**
+     * @param list<array{x: int, y: int}> $points
+     * @return array{x: int, y: int}
+     */
+    private static function findClosestPoint(array $from, array $points): array
+    {
+        $closest = $points[0];
+        $closestDistance = self::manhattanDistance($from, $closest);
+
+        foreach (array_slice($points, 1) as $point) {
+            $distance = self::manhattanDistance($from, $point);
+
+            if ($distance < $closestDistance) {
+                $closestDistance = $distance;
+                $closest = $point;
             }
         }
 
-        return $bestMoves;
+        return $closest;
+    }
+
+    private static function shouldTargetFood(array $food, int $health, array $snakes, ?string $myId): bool
+    {
+        return $food !== []
+            && !self::beatsEveryOpponentByAtLeast($health, $snakes, $myId, self::HEALTH_ADVANTAGE_THRESHOLD);
+    }
+
+    private static function beatsEveryOpponentByAtLeast(
+        int $myHealth,
+        array $snakes,
+        ?string $myId,
+        int $minimumAdvantage,
+    ): bool {
+        foreach (self::opponentSnakes($snakes, $myId) as $snake) {
+            if ($myHealth - ($snake['health'] ?? 100) < $minimumAdvantage) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /** @return array{x: int, y: int} */
+    private static function getRetreatPoint(
+        int $boardWidth,
+        int $boardHeight,
+        array $snakes,
+        ?string $myId,
+        array $myHead,
+    ): array {
+        $opponentHeads = array_map(
+            static fn(array $snake): array => $snake['body'][0],
+            self::opponentSnakes($snakes, $myId),
+        );
+
+        if ($opponentHeads === []) {
+            return self::boardCenter($boardWidth, $boardHeight);
+        }
+
+        $bestPoint = self::findFarthestPointFromOpponentHeads(
+            $boardWidth,
+            $boardHeight,
+            $opponentHeads,
+            avoidMovingTowardHeads: true,
+            myHead: $myHead,
+        );
+
+        if ($bestPoint === null) {
+            $bestPoint = self::findFarthestPointFromOpponentHeads(
+                $boardWidth,
+                $boardHeight,
+                $opponentHeads,
+                avoidMovingTowardHeads: false,
+            );
+        }
+
+        return $bestPoint ?? self::boardCenter($boardWidth, $boardHeight);
     }
 
     /**
@@ -200,25 +370,6 @@ final class Battlesnake
         ));
 
         return $interiorFood !== [] ? $interiorFood : $food;
-    }
-
-    /** @param list<array{x: int, y: int}> $opponentHeads */
-    private static function isCloserToAnyOpponentHeadThan(
-        int $x,
-        int $y,
-        array $myHead,
-        array $opponentHeads,
-    ): bool {
-        foreach ($opponentHeads as $head) {
-            $distanceFromCell = abs($x - $head['x']) + abs($y - $head['y']);
-            $distanceFromMe = abs($myHead['x'] - $head['x']) + abs($myHead['y'] - $head['y']);
-
-            if ($distanceFromCell < $distanceFromMe) {
-                return true;
-            }
-        }
-
-        return false;
     }
 
     /**
@@ -248,8 +399,7 @@ final class Battlesnake
                 $minDistance = PHP_INT_MAX;
 
                 foreach ($opponentHeads as $head) {
-                    $distance = abs($x - $head['x']) + abs($y - $head['y']);
-                    $minDistance = min($minDistance, $distance);
+                    $minDistance = min($minDistance, self::manhattanDistance(['x' => $x, 'y' => $y], $head));
                 }
 
                 if ($minDistance > $bestMinDistance) {
@@ -262,245 +412,129 @@ final class Battlesnake
         return $bestPoint;
     }
 
-    /** @return array{x: int, y: int} */
-    private static function getFarthestPointFromOpponentHeads(
+    /** @param list<array{x: int, y: int}> $opponentHeads */
+    private static function isCloserToAnyOpponentHeadThan(
+        int $x,
+        int $y,
+        array $myHead,
+        array $opponentHeads,
+    ): bool {
+        $cell = ['x' => $x, 'y' => $y];
+
+        foreach ($opponentHeads as $head) {
+            if (self::manhattanDistance($cell, $head) < self::manhattanDistance($myHead, $head)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /** @return array<string, true> */
+    private static function buildOccupiedKeys(array $myBody, array $snakes, ?string $myId): array
+    {
+        $keys = [];
+
+        foreach (array_slice($myBody, 1) as $segment) {
+            $keys[self::cellKey($segment['x'], $segment['y'])] = true;
+        }
+
+        foreach (self::opponentSnakes($snakes, $myId) as $snake) {
+            foreach ($snake['body'] as $segment) {
+                $keys[self::cellKey($segment['x'], $segment['y'])] = true;
+            }
+        }
+
+        return $keys;
+    }
+
+    private static function isCellSafe(
+        int $x,
+        int $y,
         int $boardWidth,
         int $boardHeight,
-        array $snakes,
-        ?string $myId,
-        array $myHead,
-    ): array {
-        $opponentHeads = [];
+        array $occupiedKeys,
+    ): bool {
+        if ($x < 0 || $y < 0 || $x >= $boardWidth || $y >= $boardHeight) {
+            return false;
+        }
+
+        return !isset($occupiedKeys[self::cellKey($x, $y)]);
+    }
+
+    /** @return list<array> */
+    private static function opponentSnakes(array $snakes, ?string $myId): array
+    {
+        $opponents = [];
 
         foreach ($snakes as $snake) {
             if ($myId !== null && $snake['id'] === $myId) {
                 continue;
             }
 
-            $opponentHeads[] = $snake['body'][0];
+            $opponents[] = $snake;
         }
 
-        if ($opponentHeads === []) {
-            return [
-                'x' => intdiv($boardWidth - 1, 2),
-                'y' => intdiv($boardHeight - 1, 2),
-            ];
+        return $opponents;
+    }
+
+    /**
+     * @param list<string> $candidateMoves
+     * @param array<string, int> $scores
+     * @return list<string>
+     */
+    private static function movesWithBestScore(
+        array $candidateMoves,
+        array $scores,
+        bool $lowerIsBetter = false,
+    ): array {
+        $bestScore = $lowerIsBetter ? PHP_INT_MAX : -1;
+        $bestMoves = [];
+
+        foreach ($candidateMoves as $move) {
+            $score = $scores[$move];
+
+            if ($lowerIsBetter ? $score < $bestScore : $score > $bestScore) {
+                $bestScore = $score;
+                $bestMoves = [$move];
+            } elseif ($score === $bestScore) {
+                $bestMoves[] = $move;
+            }
         }
 
-        $bestPoint = self::findFarthestPointFromOpponentHeads(
-            $boardWidth,
-            $boardHeight,
-            $opponentHeads,
-            true,
-            $myHead,
-        );
+        return $bestMoves;
+    }
 
-        if ($bestPoint === null) {
-            $bestPoint = self::findFarthestPointFromOpponentHeads(
-                $boardWidth,
-                $boardHeight,
-                $opponentHeads,
-                false,
-            );
-        }
-
-        return $bestPoint ?? [
+    /** @return array{x: int, y: int} */
+    private static function boardCenter(int $boardWidth, int $boardHeight): array
+    {
+        return [
             'x' => intdiv($boardWidth - 1, 2),
             'y' => intdiv($boardHeight - 1, 2),
         ];
     }
 
-    private static function hasMoreThanTwoHealthAdvantageOverAllOpponents(
-        int $myHealth,
-        array $snakes,
-        ?string $myId,
-    ): bool {
-        $hasMoreThanTwoHealthAdvantage = true;
-        foreach ($snakes as $snake) {
-            if ($myId !== null && $snake['id'] === $myId) {
-                continue;
-            }
-
-            if ($myHealth - ($snake['health'] ?? 100) < 2) {
-                $hasMoreThanTwoHealthAdvantage = false;
-            }
-        }
-
-        return $hasMoreThanTwoHealthAdvantage;
+    /** @param array{x: int, y: int} $offset */
+    private static function applyOffset(array $cell, array $offset): array
+    {
+        return [
+            'x' => $cell['x'] + $offset['x'],
+            'y' => $cell['y'] + $offset['y'],
+        ];
     }
 
-    /**
-     * Called every turn (POST /move).
-     * Valid moves: up, down, left, right.
-     */
-    public static function move(array $gameState): array
+    private static function isSameCell(array $a, array $b): bool
     {
-        $isMoveSafe = [
-            'up' => true,
-            'down' => true,
-            'left' => true,
-            'right' => true,
-        ];
+        return $a['x'] === $b['x'] && $a['y'] === $b['y'];
+    }
 
-        $myHead = $gameState['you']['body'][0];
-        $myNeck = $gameState['you']['body'][1];
+    private static function manhattanDistance(array $a, array $b): int
+    {
+        return abs($a['x'] - $b['x']) + abs($a['y'] - $b['y']);
+    }
 
-        if ($myNeck['x'] < $myHead['x']) {
-            $isMoveSafe['left'] = false;
-        } elseif ($myNeck['x'] > $myHead['x']) {
-            $isMoveSafe['right'] = false;
-        } elseif ($myNeck['y'] < $myHead['y']) {
-            $isMoveSafe['down'] = false;
-        } elseif ($myNeck['y'] > $myHead['y']) {
-            $isMoveSafe['up'] = false;
-        }
-
-        $boardWidth = $gameState['board']['width'];
-        $boardHeight = $gameState['board']['height'];
-
-        if ($myHead['y'] >= $boardHeight - 1) {
-            $isMoveSafe['up'] = false;
-        }
-        if ($myHead['y'] <= 0) {
-            $isMoveSafe['down'] = false;
-        }
-        if ($myHead['x'] <= 0) {
-            $isMoveSafe['left'] = false;
-        }
-        if ($myHead['x'] >= $boardWidth - 1) {
-            $isMoveSafe['right'] = false;
-        }
-
-        $myBody = $gameState['you']['body'];
-        if (($gameState['you']['health'] ?? 100) < 100) {
-            $myBody = array_slice($myBody, 0, -1);
-        }
-
-        $moveOffsets = [
-            'up' => ['x' => 0, 'y' => 1],
-            'down' => ['x' => 0, 'y' => -1],
-            'left' => ['x' => -1, 'y' => 0],
-            'right' => ['x' => 1, 'y' => 0],
-        ];
-
-        foreach ($moveOffsets as $move => $offset) {
-            if (!$isMoveSafe[$move]) {
-                continue;
-            }
-
-            $nextHead = [
-                'x' => $myHead['x'] + $offset['x'],
-                'y' => $myHead['y'] + $offset['y'],
-            ];
-
-            foreach ($myBody as $segment) {
-                if ($nextHead['x'] === $segment['x'] && $nextHead['y'] === $segment['y']) {
-                    $isMoveSafe[$move] = false;
-                    break;
-                }
-            }
-        }
-
-        $myId = $gameState['you']['id'] ?? null;
-        foreach ($gameState['board']['snakes'] as $snake) {
-            if ($myId !== null && $snake['id'] === $myId) {
-                continue;
-            }
-
-            foreach ($moveOffsets as $move => $offset) {
-                if (!$isMoveSafe[$move]) {
-                    continue;
-                }
-
-                $nextHead = [
-                    'x' => $myHead['x'] + $offset['x'],
-                    'y' => $myHead['y'] + $offset['y'],
-                ];
-
-                foreach ($snake['body'] as $segment) {
-                    if ($nextHead['x'] === $segment['x'] && $nextHead['y'] === $segment['y']) {
-                        $isMoveSafe[$move] = false;
-                        break;
-                    }
-                }
-            }
-        }
-
-        $safeMoves = [];
-        foreach ($isMoveSafe as $move => $safe) {
-            if ($safe) {
-                $safeMoves[] = $move;
-            }
-        }
-
-        if ($safeMoves === []) {
-            $turn = $gameState['turn'] ?? '?';
-            error_log("MOVE {$turn}: No safe moves detected! Moving down");
-            return ['move' => 'down'];
-        }
-
-        $occupiedKeys = self::buildOccupiedKeys($myBody, $gameState['board']['snakes'], $myId);
-        $food = self::filterEdgeFood($gameState['board']['food'], $boardWidth, $boardHeight);
-        $health = $gameState['you']['health'] ?? 100;
-
-        $spaceAwareMoves = self::getNextMoveBasedonOneSpaceAway(
-            $safeMoves,
-            $myHead,
-            $moveOffsets,
-            $boardWidth,
-            $boardHeight,
-            $occupiedKeys,
-            $health,
-        );
-
-        $shouldTargetFood = $food !== []
-            && !self::hasMoreThanTwoHealthAdvantageOverAllOpponents(
-                $health,
-                $gameState['board']['snakes'],
-                $myId,
-            );
-
-        if (!$shouldTargetFood) {
-            $targetPoint = self::getFarthestPointFromOpponentHeads(
-                $boardWidth,
-                $boardHeight,
-                $gameState['board']['snakes'],
-                $myId,
-                $myHead,
-            );
-            $candidateMoves = self::movesTowardPoint(
-                $spaceAwareMoves,
-                $myHead,
-                $moveOffsets,
-                $targetPoint['x'],
-                $targetPoint['y'],
-            );
-        } else {
-            $closestFood = $food[0];
-            $closestDistance = abs($myHead['x'] - $closestFood['x']) + abs($myHead['y'] - $closestFood['y']);
-
-            foreach (array_slice($food, 1) as $item) {
-                $distance = abs($myHead['x'] - $item['x']) + abs($myHead['y'] - $item['y']);
-                if ($distance < $closestDistance) {
-                    $closestDistance = $distance;
-                    $closestFood = $item;
-                }
-            }
-
-            $candidateMoves = self::movesTowardPoint(
-                $spaceAwareMoves,
-                $myHead,
-                $moveOffsets,
-                $closestFood['x'],
-                $closestFood['y'],
-            );
-        }
-
-        $nextMove = $candidateMoves[array_rand($candidateMoves)];
-
-        $turn = $gameState['turn'] ?? '?';
-        error_log("MOVE {$turn}: {$nextMove}");
-
-        return ['move' => $nextMove];
+    private static function cellKey(int $x, int $y): string
+    {
+        return "{$x},{$y}";
     }
 }
