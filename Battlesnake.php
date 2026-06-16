@@ -246,13 +246,40 @@ final class Battlesnake
     }
 
     /** @return array{x: int, y: int} */
-    private static function getFarthestPointFromOpponentHeads(
+    private static function getClosestPointToOpponentHeads(
         int $boardWidth,
         int $boardHeight,
         array $snakes,
         ?string $myId,
         array $myHead,
+        int $myHealth,
     ): array {
+        $closestBeatableHead = null;
+        $closestDistance = PHP_INT_MAX;
+
+        foreach ($snakes as $snake) {
+            if ($myId !== null && $snake['id'] === $myId) {
+                continue;
+            }
+
+            $opponentHealth = $snake['health'] ?? 100;
+            if ($myHealth - $opponentHealth < 2) {
+                continue;
+            }
+
+            $head = $snake['body'][0];
+            $distance = abs($myHead['x'] - $head['x']) + abs($myHead['y'] - $head['y']);
+
+            if ($distance < $closestDistance) {
+                $closestDistance = $distance;
+                $closestBeatableHead = $head;
+            }
+        }
+
+        if ($closestBeatableHead !== null) {
+            return $closestBeatableHead;
+        }
+
         $opponentHeads = [];
 
         foreach ($snakes as $snake) {
@@ -291,6 +318,24 @@ final class Battlesnake
             'x' => intdiv($boardWidth - 1, 2),
             'y' => intdiv($boardHeight - 1, 2),
         ];
+    }
+
+    private static function hasMoreThanTwoHealthAdvantageOverAnyOpponent(
+        int $myHealth,
+        array $snakes,
+        ?string $myId,
+    ): bool {
+        foreach ($snakes as $snake) {
+            if ($myId !== null && $snake['id'] === $myId) {
+                continue;
+            }
+
+            if ($myHealth - ($snake['health'] ?? 100) >= 2) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**
@@ -417,20 +462,28 @@ final class Battlesnake
             $health,
         );
 
-        if ($food === [] || $health > 30) {
-            $retreatPoint = self::getFarthestPointFromOpponentHeads(
+        $shouldTargetFood = $food !== []
+            && !self::hasMoreThanTwoHealthAdvantageOverAnyOpponent(
+                $health,
+                $gameState['board']['snakes'],
+                $myId,
+            );
+
+        if (!$shouldTargetFood) {
+            $targetPoint = self::getClosestPointToOpponentHeads(
                 $boardWidth,
                 $boardHeight,
                 $gameState['board']['snakes'],
                 $myId,
                 $myHead,
+                $health,
             );
             $candidateMoves = self::movesTowardPoint(
                 $spaceAwareMoves,
                 $myHead,
                 $moveOffsets,
-                $retreatPoint['x'],
-                $retreatPoint['y'],
+                $targetPoint['x'],
+                $targetPoint['y'],
             );
         } else {
             $closestFood = $food[0];
