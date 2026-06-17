@@ -95,7 +95,13 @@ final class Battlesnake
             $target['x'],
             $target['y'],
         );
-        $nextMove = $candidateMoves[array_rand($candidateMoves)];
+
+        $lastMove = $gameState['you']['last_move'] ?? self::getOppositeDirection($myHead, $myBody[1]);
+        if ($lastMove !== null && in_array($lastMove, $candidateMoves)) {
+            $nextMove = $lastMove;
+        } else {
+            $nextMove = $candidateMoves[array_rand($candidateMoves)];
+        }
 
         $turn = $gameState['turn'] ?? '?';
         error_log("MOVE {$turn}: {$nextMove}");
@@ -138,15 +144,39 @@ final class Battlesnake
     /** @param array<string, bool> $isMoveSafe */
     private static function blockReverseMove(array &$isMoveSafe, array $head, array $neck): void
     {
-        if ($neck['x'] < $head['x']) {
-            $isMoveSafe['left'] = false;
-        } elseif ($neck['x'] > $head['x']) {
-            $isMoveSafe['right'] = false;
-        } elseif ($neck['y'] < $head['y']) {
-            $isMoveSafe['down'] = false;
-        } elseif ($neck['y'] > $head['y']) {
-            $isMoveSafe['up'] = false;
+        $lastMove = self::getOppositeDirection($head, $neck);
+
+        if ($lastMove === null) {
+            return;
         }
+
+        $reverseMove = [
+            'up' => 'down',
+            'down' => 'up',
+            'left' => 'right',
+            'right' => 'left',
+        ][$lastMove];
+
+        $isMoveSafe[$reverseMove] = false;
+    }
+
+    /** @return ?string */
+    private static function getOppositeDirection(array $head, array $neck): ?string
+    {
+        if ($neck['x'] < $head['x']) {
+            return 'right';
+        }
+        if ($neck['x'] > $head['x']) {
+            return 'left';
+        }
+        if ($neck['y'] < $head['y']) {
+            return 'up';
+        }
+        if ($neck['y'] > $head['y']) {
+            return 'down';
+        }
+
+        return null;
     }
 
     /** @param array<string, bool> $isMoveSafe */
